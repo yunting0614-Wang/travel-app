@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>全球旅遊助手 Pro - 旗艦版</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.3.4/vue.global.prod.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; color: #1e293b; overflow-x: hidden; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .glass-ui { background: white; border-radius: 28px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); }
+        .wizard-layer { position: fixed; inset: 0; background: #0f172a; z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        #map-container { height: 160px; width: 100%; border-radius: 20px; overflow: hidden; background: #e2e8f0; }
+        .tab-active { color: #0284c7; font-weight: bold; border-bottom: 2px solid #0284c7; }
+        .nav-bar { position: fixed; bottom: 0; left: 0; right: 0; height: 75px; background: white; border-top: 1px solid #e2e8f0; display: flex; z-index: 1000; padding-bottom: env(safe-area-inset-bottom); }
+        .currency-pill { background: #f1f5f9; padding: 4px 12px; border-radius: 99px; font-size: 12px; font-weight: bold; color: #64748b; border: 1px solid #e2e8f0; }
+        .currency-pill.active { background: #e0f2fe; color: #0369a1; border-color: #7dd3fc; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div v-if="appState === 'setup'" class="wizard-layer">
+            <div class="glass-ui p-8 w-full max-w-sm space-y-6">
+                <h2 class="text-2xl font-bold text-center">🌍 全球行程初始化</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-[10px] text-slate-400 font-bold ml-1">目的地</label>
+                        <input v-model="form.city" @input="handleAutoDetect" placeholder="例如: Poland 或 曼谷" class="w-full bg-slate-100 rounded-2xl px-5 py-4 outline-none focus:ring-2 ring-sky-500">
+                    </div>
+                    
+                    <div>
+                        <label class="text-[10px] text-slate-400 font-bold ml-1">幣別確認 (支援手動輸入代碼)</label>
+                        <div class="flex gap-2">
+                            <input v-model="form.currency" @change="fetchExchangeRate" placeholder="e.g. PLN" class="w-full bg-slate-100 rounded-xl px-4 py-3 text-sm font-bold uppercase">
+                            <div class="flex items-center text-xs text-sky-600 bg-sky-50 px-3 rounded-xl whitespace-nowrap">
+                                1 = {{ form.rate }} NTD
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <div class="flex-1">
+                            <label class="text-[10px] text-slate-400 font-bold ml-1">出發日</label>
+                            <input type="date" v-model="form.date" class="w-full bg-slate-100 rounded-xl px-3 py-3 text-sm">
+                        </div>
+                        <div class="w-24">
+                            <label class="text-[10px] text-slate-400 font-bold ml-1">總天數</label>
+                            <input type="number" v-model="form.days" class="w-full bg-slate-100 rounded-xl px-3 py-3 text-sm">
+                        </div>
+                    </div>
+                </div>
+                <button @click="startJourney" :disabled="loading" class="w-full bg-sky-600 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-all disabled:opacity-50">
+                    {{ loading ? '更新匯率中...' : '開啟行程' }}
+                </button>
+            </div>
+        </div>
+
+        <div v-else class="pb-24">
+            <header class="bg-white p-5 sticky top-0 z-50 shadow-sm flex justify-between items-center">
+                <div>
+                    <h1 class="text-xl font-bold text-sky-800">{{ trip.city }}之旅</h1>
+                    <div class="text-[10px] text-slate-400">當前匯率 1 {{ trip.currency }} = {{ trip.exchangeRate }} TWD</div>
+                </div>
+                <button @click="resetSystem" class="text-[10px] text-slate-300">重設系統</button>
+            </header>
+
+            <main class="p-4 space-y-6">
+                <div v-if="activeTab === 'home'" class="space-y-6">
+                    <div class="flex gap-3 overflow-x-auto no-scrollbar py-1">
+                        <div v-for="(day, idx) in trip.days" :key="idx" @click="currentDayIdx = idx"
+                             :class="['flex-shrink-0 w-14 h-16 rounded-2xl flex flex-col items-center justify-center transition-all', currentDayIdx === idx ? 'bg-sky-600 text-white shadow-md' : 'bg-white text-slate-400']">
+                            <span class="text-[10px]">{{ day.dateLabel }}</span>
+                            <span class="font-bold">{{ day.week }}</span>
+                        </div>
+                    </div>
+                    <div class="glass-ui overflow-hidden shadow-sm"><div id="map-container"></div></div>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center px-1"><h3 class="font-bold">當日計畫</h3><button @click="addEvent" class="bg-sky-600 text-white text-xs px-3 py-1 rounded-full">+ 新增</button></div>
+                        <div v-for="(ev, ei) in currentDay.events" :key="ei" class="glass-ui p-4 flex gap-3 border-l-4 border-sky-400">
+                            <input v-model="ev.time" class="w-12 font-bold text-sky-600 bg-transparent outline-none">
+                            <div class="flex-1">
+                                <div class="flex justify-between"><input v-model="ev.title" placeholder="地點" class="font-bold outline-none bg-transparent flex-1"><button @click="goNav(ev.title)" class="text-[10px] text-sky-500">導航</button></div>
+                                <input v-model="ev.note" placeholder="備註..." class="text-xs text-slate-400 mt-1 w-full outline-none bg-transparent">
+                            </div>
+                            <button @click="currentDay.events.splice(ei, 1)" class="text-slate-200">✕</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'expense'" class="space-y-6">
+                    <div class="bg-sky-900 text-white p-7 rounded-[32px] shadow-xl relative overflow-hidden">
+                        <div class="relative z-10">
+                            <div class="text-xs opacity-70 mb-1">今日總支出 (換算台幣)</div>
+                            <div class="text-3xl font-bold tracking-tight">NT$ {{ Math.round(dayTotal * trip.exchangeRate).toLocaleString() }}</div>
+                            <div class="text-[10px] mt-2 opacity-50">原始支出：{{ dayTotal.toLocaleString() }} {{ trip.currency }}</div>
+                        </div>
+                        <div class="absolute right-[-10px] bottom-[-10px] text-7xl opacity-10">💸</div>
+                    </div>
+
+                    <div class="glass-ui p-6">
+                        <h3 class="font-bold mb-4">支出明細</h3>
+                        <div class="space-y-4">
+                            <div v-for="(ex, exi) in currentDay.expenses" :key="exi" class="flex justify-between items-center text-sm">
+                                <div><div class="font-bold">{{ ex.name }}</div><div class="text-[10px] text-slate-400">NT$ {{ Math.round(ex.amount * trip.exchangeRate) }}</div></div>
+                                <div class="flex items-center gap-3 font-mono"><span>{{ ex.amount }}</span><button @click="currentDay.expenses.splice(exi,1)" class="text-slate-200">✕</button></div>
+                            </div>
+                            <div class="flex gap-2 pt-4 border-t">
+                                <input v-model="newEx.name" placeholder="項目" class="bg-slate-50 rounded-xl px-3 py-3 text-sm w-full outline-none">
+                                <input v-model.number="newEx.amount" placeholder="金額" class="bg-slate-50 rounded-xl px-3 py-3 text-sm w-20 outline-none">
+                                <button @click="addExpense" class="bg-sky-600 text-white px-5 rounded-xl font-bold">+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-if="activeTab === 'list'" class="space-y-6">
+                    <div class="glass-ui p-6">
+                        <h3 class="font-bold mb-3">📝 備忘筆記</h3>
+                        <textarea v-model="trip.notes" placeholder="貼上訂位資訊或門票代碼..." class="w-full h-64 bg-slate-50 rounded-2xl p-4 text-sm outline-none resize-none border-none"></textarea>
+                    </div>
+                </div>
+            </main>
+
+            <nav class="nav-bar">
+                <button @click="activeTab = 'home'" :class="{'tab-active': activeTab === 'home'}" class="flex-1 flex flex-col items-center justify-center">
+                    <span class="text-xl">📅</span><span class="text-[10px] mt-1">行程</span>
+                </button>
+                <button @click="activeTab = 'expense'" :class="{'tab-active': activeTab === 'expense'}" class="flex-1 flex flex-col items-center justify-center">
+                    <span class="text-xl">💰</span><span class="text-[10px] mt-1">記帳</span>
+                </button>
+                <button @click="activeTab = 'list'" :class="{'tab-active': activeTab === 'list'}" class="flex-1 flex flex-col items-center justify-center">
+                    <span class="text-xl">📝</span><span class="text-[10px] mt-1">筆記</span>
+                </button>
+            </nav>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
+
+        // 擴充關鍵字偵測
+        const AUTO_CCY_MAP = {
+            'poland': 'PLN', '波蘭': 'PLN', 'singapore': 'SGD', '新加坡': 'SGD',
+            'thailand': 'THB', 'bangkok': 'THB', '曼谷': 'THB', 'japan': 'JPY', '日本': 'JPY',
+            'korea': 'KRW', '韓國': 'KRW', 'seoul': 'KRW', 'london': 'GBP', '英國': 'GBP',
+            'europe': 'EUR', '法國': 'EUR', '德國': 'EUR', 'usa': 'USD', '美國': 'USD',
+            'vietnam': 'VND', '越南': 'VND', 'canada': 'CAD', 'australia': 'AUD'
+        };
+
+        createApp({
+            setup() {
+                const appState = ref(localStorage.getItem('trip_v6') ? 'main' : 'setup');
+                const activeTab = ref('home');
+                const currentDayIdx = ref(0);
+                const loading = ref(false);
+                const form = ref({ city: '', date: '', days: 1, currency: 'USD', rate: 32.5 });
+                const newEx = ref({ name: '', amount: null });
+                const trip = ref(JSON.parse(localStorage.getItem('trip_v6')) || { 
+                    city: '', currency: 'USD', exchangeRate: 32.5, notes: '', days: [] 
+                });
+
+                // 核心：幣別偵測與 API 串接
+                const handleAutoDetect = () => {
+                    const input = form.value.city.toLowerCase();
+                    for (let key in AUTO_CCY_MAP) {
+                        if (input.includes(key)) {
+                            form.value.currency = AUTO_CCY_MAP[key];
+                            fetchExchangeRate();
+                            break;
+                        }
+                    }
+                };
+
+                const fetchExchangeRate = async () => {
+                    if (!form.value.currency) return;
+                    loading.value = true;
+                    try {
+                        const res = await fetch(`https://open.er-api.com/v6/latest/${form.value.currency.toUpperCase()}`);
+                        const data = await res.json();
+                        if (data.rates && data.rates.TWD) {
+                            form.value.rate = data.rates.TWD.toFixed(4);
+                        }
+                    } catch (e) {
+                        alert("匯率 API 獲取失敗，請手動確認網路。");
+                    } finally {
+                        loading.value = false;
+                    }
+                };
+
+                const startJourney = () => {
+                    if (!form.value.city || !form.value.date) return alert('資訊不完整');
+                    const start = new Date(form.value.date);
+                    const daysArr = [];
+                    const weeks = ['日','一','二','三','四','五','六'];
+                    for(let i=0; i<form.value.days; i++){
+                        const d = new Date(start); d.setDate(start.getDate() + i);
+                        daysArr.push({
+                            dateLabel: `${d.getMonth()+1}/${d.getDate()}`,
+                            week: weeks[d.getDay()],
+                            events: [{time: '09:00', title: '新的起點', note: ''}],
+                            expenses: []
+                        });
+                    }
+                    trip.value = {
+                        city: form.value.city,
+                        currency: form.value.currency.toUpperCase(),
+                        exchangeRate: form.value.rate,
+                        notes: '', days: daysArr
+                    };
+                    localStorage.setItem('trip_v6', JSON.stringify(trip.value));
+                    appState.value = 'main';
+                    nextTick(() => { initMap(); });
+                };
+
+                let map = null;
+                const initMap = () => {
+                    if (!map && document.getElementById('map-container')) {
+                        map = L.map('map-container', { zoomControl: false }).setView([20, 0], 2);
+                        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(map);
+                    }
+                };
+
+                const dayTotal = computed(() => {
+                    const day = trip.value.days[currentDayIdx.value];
+                    return day ? day.expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0) : 0;
+                });
+
+                watch(trip, () => { localStorage.setItem('trip_v6', JSON.stringify(trip.value)); }, { deep: true });
+                onMounted(() => { if (appState.value === 'main') initMap(); });
+
+                return {
+                    appState, activeTab, currentDayIdx, loading, form, trip, newEx, dayTotal,
+                    handleAutoDetect, fetchExchangeRate, startJourney,
+                    addEvent: () => trip.value.days[currentDayIdx.value].events.push({time:'12:00',title:'',note:''}),
+                    addExpense: () => { if(newEx.value.name) { trip.value.days[currentDayIdx.value].expenses.push({...newEx.value}); newEx.value = {name:'', amount:null}; } },
+                    goNav: (t) => window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trip.value.city + ' ' + t)}`, '_blank'),
+                    resetSystem: () => { if(confirm('重設系統？')) { localStorage.clear(); location.reload(); } },
+                    currentDay: computed(() => trip.value.days[currentDayIdx.value] || {events:[], expenses:[]})
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
